@@ -8,6 +8,7 @@ import mlflow.sklearn
 from mlflow.models import infer_signature
 import joblib
 import numpy as np
+import os
 
 def eval_metrics(y_true, y_pred, y_pred_proba=None):
     accuracy = accuracy_score(y_true, y_pred)
@@ -68,16 +69,24 @@ if __name__ == "__main__":
         # Сохраняем scaler и модель локально
         joblib.dump(scaler, "scaler.pkl")
         joblib.dump(model, "stroke_model.pkl")
+        
+        # Получаем URI текущего run
+        current_run_id = mlflow.active_run().info.run_id
+        current_experiment_id = mlflow.active_run().info.experiment_id
+        
+        # Формируем путь к артефактам
+        mlflow_artifacts_path = f"./mlruns/{current_experiment_id}/{current_run_id}/artifacts/model"
+        absolute_path = os.path.abspath(mlflow_artifacts_path)
+        
+        # Записываем путь в файл
+        with open("best_model.txt", "w") as f:
+            f.write(absolute_path)
+        
+        # Также создаем файл в директории download для надежности
+        download_path = "/var/lib/jenkins/workspace/download/best_model.txt"
+        with open(download_path, "w") as f:
+            f.write(absolute_path)
+        
+        print(f"Model path saved to best_model.txt: {absolute_path}")
     
-    # Находим лучшую модель по roc_auc
-    df_runs = mlflow.search_runs()
-    if len(df_runs) > 0:
-        best_run = df_runs.sort_values("metrics.roc_auc", ascending=False).iloc[0]
-        path2model = best_run['artifact_uri'].replace("file://", "") + '/model'
-        # Записываем ТОЛЬКО путь к модели в файл (одна строка)
-        with open("best_model.txt", "w") as f:
-            f.write(path2model)
-    else:
-        # Если логов нет, используем локальную модель
-        with open("best_model.txt", "w") as f:
-            f.write("./stroke_model.pkl")
+    print("Training completed successfully")
