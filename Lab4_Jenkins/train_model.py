@@ -34,12 +34,12 @@ if __name__ == "__main__":
     X_train, X_val, y_train, y_val = train_test_split(X_scaled, y,
                                                       test_size=0.2,
                                                       random_state=42,
-                                                      stratify=y)  # стратификация для несбалансированных классов
+                                                      stratify=y)
     
     # Настраиваем MLflow
     mlflow.set_experiment("stroke_prediction_model")
     with mlflow.start_run():
-        # Обучаем модель RandomForest (можно и другие)
+        # Обучаем модель
         model = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42, class_weight='balanced')
         model.fit(X_train, y_train)
         
@@ -65,26 +65,19 @@ if __name__ == "__main__":
         signature = infer_signature(X_train, model.predict(X_train))
         mlflow.sklearn.log_model(model, "model", signature=signature)
         
-        # Сохраняем scaler для последующего использования в сервисе
+        # Сохраняем scaler и модель локально
         joblib.dump(scaler, "scaler.pkl")
-        
-        # Сохраняем модель локально
         joblib.dump(model, "stroke_model.pkl")
-        
-        print("Model trained and logged.")
     
-    # Находим лучшую модель по roc_auc (или другой метрике)
+    # Находим лучшую модель по roc_auc
     df_runs = mlflow.search_runs()
-    # Если экспериментов нет, обрабатываем ошибку
     if len(df_runs) > 0:
-        # Сортируем по roc_auc
         best_run = df_runs.sort_values("metrics.roc_auc", ascending=False).iloc[0]
         path2model = best_run['artifact_uri'].replace("file://", "") + '/model'
-        print(path2model)
+        # Записываем ТОЛЬКО путь к модели в файл (одна строка)
         with open("best_model.txt", "w") as f:
             f.write(path2model)
     else:
         # Если логов нет, используем локальную модель
         with open("best_model.txt", "w") as f:
             f.write("./stroke_model.pkl")
-        print("No MLflow runs found, using local model path.")
