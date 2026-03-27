@@ -2,7 +2,7 @@ import pandas as pd
 from sklearn.preprocessing import OrdinalEncoder
 
 def download_data():
-    url = 'https://github.com/Martin-Li-45/MLops_Meshkov-main/blob/main/Lab4_Jenkins/healthcare-dataset-stroke-data.csv'
+    url = 'https://raw.githubusercontent.com/Martin-Li-45/MLops_Meshkov-main/refs/heads/main/Lab4_Jenkins/healthcare-dataset-stroke-data.csv'
 
     df = pd.read_csv(url)
     df.to_csv("stroke_raw.csv", index=False)
