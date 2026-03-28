@@ -10,6 +10,7 @@ from mlflow.models import infer_signature
 import mlflow
 import joblib
 import warnings
+import os
 warnings.filterwarnings('ignore')
 
 def scale_frame(frame):
@@ -138,10 +139,6 @@ if __name__ == "__main__":
             registered_model_name="stroke_predictor"
         )
         
-        # Сохраняем модель локально
-        joblib.dump(best_model, "stroke_model.pkl")
-        joblib.dump(scaler, "scaler.pkl")
-        
         print("\n" + "="*50)
         print("Model Training Completed!")
         print(f"Best parameters: {clf.best_params_}")
@@ -153,30 +150,25 @@ if __name__ == "__main__":
         print(f"  F1-Score:  {f1:.4f}")
         print(f"  ROC-AUC:   {roc_auc:.4f}")
         print("="*50)
-        
-        # Сохраняем информацию о лучшей модели для деплоя
-        # Находим лучший run по ROC-AUC
-        df_runs = mlflow.search_runs()
-        if len(df_runs) > 0:
-            # Сортируем по ROC-AUC (если есть, иначе по F1)
-            if 'metrics.roc_auc' in df_runs.columns:
-                best_run = df_runs.sort_values("metrics.roc_auc", ascending=False).iloc[0]
-            else:
-                best_run = df_runs.sort_values("metrics.f1_score", ascending=False).iloc[0]
-            
-            path2model = best_run['artifact_uri'].replace("file://", "") + '/model'
-            print(f"\nPath to best model: {path2model}")
-            
-            # Сохраняем путь в файл для деплоя
-            with open("best_model.txt", "w") as f:
-                f.write(path2model)
-        else:
-            # Если нет runs, используем локальную модель
-            with open("best_model.txt", "w") as f:
-                f.write("./stroke_model.pkl")
-            print("\nNo MLflow runs found, using local model path")
+    
+    # ========== ПРОСТОЕ СОХРАНЕНИЕ МОДЕЛИ ЛОКАЛЬНО ==========
+    print("\n" + "="*50)
+    print("Saving model locally...")
+    
+    # Сохраняем модель и scaler локально
+    joblib.dump(best_model, "stroke_model.pkl")
+    joblib.dump(scaler, "scaler.pkl")
+    
+    # Записываем ПРОСТОЙ путь в best_model.txt
+    with open("best_model.txt", "w") as f:
+        f.write("stroke_model.pkl")
+    
+    print("✓ Model saved to: stroke_model.pkl")
+    print("✓ Scaler saved to: scaler.pkl")
+    print("✓ Path saved to: best_model.txt")
+    print("="*50)
 
-# Дополнительно: создаем файл с информацией о признаках для сервиса
+# Сохраняем информацию о признаках
 feature_info = pd.DataFrame({
     'feature': ['gender', 'age', 'hypertension', 'heart_disease', 'ever_married',
                 'work_type', 'Residence_type', 'avg_glucose_level', 'bmi', 'smoking_status'],
@@ -186,4 +178,4 @@ feature_info = pd.DataFrame({
     ]
 })
 feature_info.to_csv('feature_info.csv', index=False)
-print("\nFeature info saved to feature_info.csv")
+print("\n✓ Feature info saved to feature_info.csv")
