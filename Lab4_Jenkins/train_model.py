@@ -9,6 +9,7 @@ import mlflow.sklearn
 from mlflow.models import infer_signature
 import joblib
 import os
+import sys
 
 def eval_metrics(y_true, y_pred, y_pred_proba=None):
     accuracy = accuracy_score(y_true, y_pred)
@@ -21,14 +22,16 @@ def eval_metrics(y_true, y_pred, y_pred_proba=None):
 if __name__ == "__main__":
     # Загружаем очищенные данные
     df = pd.read_csv("./df_clear.csv")
-    print(f"Loaded {len(df)} rows")
-    print("Columns:", list(df.columns))
+    
+    # Перенаправляем вывод в stderr, чтобы stdout был чистым для best_model.txt
+    print(f"Loaded {len(df)} rows", file=sys.stderr)
+    print("Columns:", list(df.columns), file=sys.stderr)
     
     # Целевая переменная
     target = 'stroke'
     if target not in df.columns:
-        print(f"ERROR: '{target}' not found in columns!")
-        print("Available columns:", list(df.columns))
+        print(f"ERROR: '{target}' not found in columns!", file=sys.stderr)
+        print("Available columns:", list(df.columns), file=sys.stderr)
         exit(1)
     
     X = df.drop(columns=[target])
@@ -43,8 +46,8 @@ if __name__ == "__main__":
         X_scaled, y, test_size=0.2, random_state=42, stratify=y
     )
     
-    print(f"Train size: {len(X_train)}, Val size: {len(X_val)}")
-    print(f"Positive class ratio: {y.mean():.4f}")
+    print(f"Train size: {len(X_train)}, Val size: {len(X_val)}", file=sys.stderr)
+    print(f"Positive class ratio: {y.mean():.4f}", file=sys.stderr)
     
     # Настраиваем MLflow
     mlflow.set_experiment("stroke_prediction_model")
@@ -78,9 +81,9 @@ if __name__ == "__main__":
         mlflow.log_metric("f1", f1)
         mlflow.log_metric("roc_auc", roc_auc)
         
-        print(f"Metrics - Accuracy: {accuracy:.4f}, ROC-AUC: {roc_auc:.4f}")
+        print(f"Metrics - Accuracy: {accuracy:.4f}, ROC-AUC: {roc_auc:.4f}", file=sys.stderr)
         
-        # КЛЮЧЕВОЕ: Логируем модель с сигнатурой
+        # Логируем модель с сигнатурой
         signature = infer_signature(X_train, model.predict(X_train))
         mlflow.sklearn.log_model(
             sk_model=model,
@@ -97,12 +100,14 @@ if __name__ == "__main__":
         
         # Получаем путь к сохраненной MLflow модели
         model_uri = f"runs:/{run.info.run_id}/model"
-        print(f"Model URI: {model_uri}")
         
-        # Сохраняем путь в best_model.txt
+        # Сохраняем путь в best_model.txt (только путь, без другого текста)
         with open("best_model.txt", "w") as f:
             f.write(model_uri)
         
-        print("✅ Model saved successfully")
+        # Выводим путь в stdout (это будет единственное, что попадет в файл при перенаправлении)
+        print(model_uri)
+        
+        print("✅ Model saved successfully", file=sys.stderr)
     
-    print("=== Training completed ===")
+    print("=== Training completed ===", file=sys.stderr)
