@@ -11,6 +11,7 @@ import mlflow
 import joblib
 import warnings
 import os
+from imblearn.over_sampling import SMOTE  # ДОБАВИТЬ: библиотека для балансировки
 warnings.filterwarnings('ignore')
 
 def scale_frame(frame):
@@ -18,12 +19,10 @@ def scale_frame(frame):
     Масштабирование признаков для задачи классификации
     """
     df = frame.copy()
-    # Определяем целевой признак (stroke) и признаки
     target = 'stroke'
     X = df.drop(columns=[target])
     y = df[target]
     
-    # Масштабируем только признаки
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     
@@ -38,7 +37,6 @@ def eval_metrics(actual, pred, pred_proba=None):
     recall = recall_score(actual, pred, zero_division=0)
     f1 = f1_score(actual, pred, zero_division=0)
     
-    # ROC-AUC только если есть вероятности
     roc_auc = None
     if pred_proba is not None:
         roc_auc = roc_auc_score(actual, pred_proba)
@@ -60,21 +58,27 @@ if __name__ == "__main__":
         X_scaled, y,
         test_size=0.3,
         random_state=42,
-        stratify=y  # стратификация для несбалансированных классов
+        stratify=y
     )
     
     print(f"Train size: {X_train.shape}, Validation size: {X_val.shape}")
     print(f"Train positive class ratio: {y_train.mean():.4f}")
     print(f"Validation positive class ratio: {y_val.mean():.4f}")
     
+    # ========== ДОБАВЛЕНО: SMOTE для балансировки классов ==========
+    print("\nApplying SMOTE for class balancing...")
+    smote = SMOTE(random_state=42, k_neighbors=3)
+    X_train_balanced, y_train_balanced = smote.fit_resample(X_train, y_train)
+    print(f"Balanced train size: {X_train_balanced.shape}")
+    print(f"Balanced positive class ratio: {y_train_balanced.mean():.4f}")
+    
     # Параметры для GridSearch
-    # Используем RandomForest как более подходящий для несбалансированных данных
     params = {
-        'n_estimators': [50, 100, 150],
-        'max_depth': [5, 10, 15, None],
-        'min_samples_split': [2, 5, 10],
-        'min_samples_leaf': [1, 2, 4],
-        'class_weight': ['balanced', 'balanced_subsample', None]
+        'n_estimators': [100, 150, 200],  # немного увеличил
+        'max_depth': [10, 15, 20],  # убрал None для стабильности
+        'min_samples_split': [2, 5],
+        'min_samples_leaf': [1, 2],
+        'class_weight': [None]  # SMOTE уже балансирует, поэтому class_weight=None
     }
     
     # Настройка MLflow эксперимента
@@ -83,32 +87,44 @@ if __name__ == "__main__":
     with mlflow.start_run():
         print("\nStarting GridSearchCV...")
         
-        # Создаем модель RandomForestClassifier
         rf = RandomForestClassifier(random_state=42, n_jobs=-1)
         
-        # GridSearch с кросс-валидацией
         clf = GridSearchCV(
             rf, 
             params, 
             cv=3, 
             n_jobs=4,
-            scoring='roc_auc',  # оптимизируем ROC-AUC из-за дисбаланса классов
+            scoring='roc_auc',
             verbose=1
         )
         
-        clf.fit(X_train, y_train)
+        # Используем СБАЛАНСИРОВАННЫЕ данные для обучения
+        clf.fit(X_train_balanced, y_train_balanced)
         
-        # Получаем лучшую модель
         best_model = clf.best_estimator_
         
         # Предсказания на валидационной выборке
         y_pred = best_model.predict(X_val)
-        y_pred_proba = best_model.predict_proba(X_val)[:, 1]  # вероятности для ROC-AUC
+        y_pred_proba = best_model.predict_proba(X_val)[:, 1]
         
-        # Расчет метрик
+        # ========== ДОБАВЛЕНО: Оптимизация порога ==========
+        # Находим оптимальный порог по ROC-AUC
+        from sklearn.metrics import roc_curve
+        fpr, tpr, thresholds = roc_curve(y_val, y_pred_proba)
+        # Оптимальный порог - максимизирующий Youden's J statistic
+        optimal_idx = np.argmax(tpr - fpr)
+        optimal_threshold = thresholds[optimal_idx]
+        
+        # Применяем оптимальный порог
+        y_pred_optimized = (y_pred_proba >= optimal_threshold).astype(int)
+        
+        # Расчет метрик для обычного порога (0.5)
         accuracy, precision, recall, f1, roc_auc = eval_metrics(y_val, y_pred, y_pred_proba)
         
-        # Логируем параметры лучшей модели
+        # Расчет метрик для оптимизированного порога
+        accuracy_opt, precision_opt, recall_opt, f1_opt, _ = eval_metrics(y_val, y_pred_optimized, y_pred_proba)
+        
+        # Логируем параметры
         mlflow.log_param("best_params", str(clf.best_params_))
         mlflow.log_param("n_estimators", best_model.n_estimators)
         mlflow.log_param("max_depth", best_model.max_depth)
@@ -116,22 +132,28 @@ if __name__ == "__main__":
         mlflow.log_param("min_samples_leaf", best_model.min_samples_leaf)
         mlflow.log_param("class_weight", best_model.class_weight)
         mlflow.log_param("random_state", 42)
+        mlflow.log_param("smote_applied", True)
+        mlflow.log_param("optimal_threshold", optimal_threshold)  # ДОБАВЛЕНО
         
-        # Логируем метрики
+        # Логируем метрики для обычного порога
         mlflow.log_metric("accuracy", accuracy)
         mlflow.log_metric("precision", precision)
         mlflow.log_metric("recall", recall)
         mlflow.log_metric("f1_score", f1)
         mlflow.log_metric("roc_auc", roc_auc)
         
-        # Логируем матрицу ошибок как артефакт
-        cm = confusion_matrix(y_val, y_pred)
-        print(f"\nConfusion Matrix:\n{cm}")
+        # ДОБАВЛЕНО: логируем метрики для оптимизированного порога
+        mlflow.log_metric("accuracy_optimized", accuracy_opt)
+        mlflow.log_metric("precision_optimized", precision_opt)
+        mlflow.log_metric("recall_optimized", recall_opt)
+        mlflow.log_metric("f1_score_optimized", f1_opt)
         
-        # Создаем сигнатуру для модели
-        signature = infer_signature(X_train, best_model.predict(X_train))
+        # Матрица ошибок
+        cm = confusion_matrix(y_val, y_pred_optimized)
+        print(f"\nConfusion Matrix (optimized threshold={optimal_threshold:.3f}):\n{cm}")
         
-        # Логируем модель в MLflow
+        signature = infer_signature(X_train_balanced, best_model.predict(X_train_balanced))
+        
         mlflow.sklearn.log_model(
             best_model, 
             "model", 
@@ -143,28 +165,35 @@ if __name__ == "__main__":
         print("Model Training Completed!")
         print(f"Best parameters: {clf.best_params_}")
         print(f"Best CV score: {clf.best_score_:.4f}")
-        print(f"Validation metrics:")
+        print(f"\nMetrics (default threshold=0.5):")
         print(f"  Accuracy:  {accuracy:.4f}")
         print(f"  Precision: {precision:.4f}")
         print(f"  Recall:    {recall:.4f}")
         print(f"  F1-Score:  {f1:.4f}")
         print(f"  ROC-AUC:   {roc_auc:.4f}")
+        print(f"\nMetrics (optimized threshold={optimal_threshold:.3f}):")
+        print(f"  Accuracy:  {accuracy_opt:.4f}")
+        print(f"  Precision: {precision_opt:.4f}")
+        print(f"  Recall:    {recall_opt:.4f}")
+        print(f"  F1-Score:  {f1_opt:.4f}")
         print("="*50)
     
-    # ========== ПРОСТОЕ СОХРАНЕНИЕ МОДЕЛИ ЛОКАЛЬНО ==========
+    # Сохраняем модель и порог
     print("\n" + "="*50)
     print("Saving model locally...")
     
-    # Сохраняем модель и scaler локально
+    # Сохраняем модель, scaler и порог
     joblib.dump(best_model, "stroke_model.pkl")
     joblib.dump(scaler, "scaler.pkl")
+    joblib.dump(optimal_threshold, "threshold.pkl")  # ДОБАВЛЕНО: сохраняем порог
     
-    # Записываем ПРОСТОЙ путь в best_model.txt
+    # Записываем путь в best_model.txt
     with open("best_model.txt", "w") as f:
         f.write("stroke_model.pkl")
     
     print("✓ Model saved to: stroke_model.pkl")
     print("✓ Scaler saved to: scaler.pkl")
+    print("✓ Threshold saved to: threshold.pkl")
     print("✓ Path saved to: best_model.txt")
     print("="*50)
 
