@@ -23,7 +23,6 @@ if __name__ == "__main__":
     # Загружаем очищенные данные
     df = pd.read_csv("./df_clear.csv")
     
-    # Перенаправляем вывод в stderr, чтобы stdout был чистым для best_model.txt
     print(f"Loaded {len(df)} rows", file=sys.stderr)
     print("Columns:", list(df.columns), file=sys.stderr)
     
@@ -83,31 +82,41 @@ if __name__ == "__main__":
         
         print(f"Metrics - Accuracy: {accuracy:.4f}, ROC-AUC: {roc_auc:.4f}", file=sys.stderr)
         
-        # Логируем модель с сигнатурой
+        # ========== ИСПРАВЛЕННАЯ ЧАСТЬ ==========
+        # Создаем сигнатуру
         signature = infer_signature(X_train, model.predict(X_train))
+        
+        # Логируем модель ПРАВИЛЬНО - с artifact_path="model"
+        # Это создаст структуру artifacts/model/ с необходимыми файлами
         mlflow.sklearn.log_model(
             sk_model=model,
-            artifact_path="model",
+            artifact_path="model",  # ВАЖНО: именно "model", а не что-то другое
             signature=signature,
             registered_model_name="stroke_predictor"
         )
         
-        # Сохраняем scaler
-        joblib.dump(scaler, "scaler.pkl")
+        # Сохраняем scaler как артефакт (чтобы он был в MLflow)
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scaler_path = os.path.join(tmpdir, "scaler.pkl")
+            joblib.dump(scaler, scaler_path)
+            mlflow.log_artifact(scaler_path, artifact_path="model")
         
         # Сохраняем модель локально (как fallback)
         joblib.dump(model, "stroke_model.pkl")
+        joblib.dump(scaler, "scaler.pkl")
         
-        # Получаем путь к сохраненной MLflow модели
+        # Получаем правильный URI для serving
         model_uri = f"runs:/{run.info.run_id}/model"
         
-        # Сохраняем путь в best_model.txt (только путь, без другого текста)
+        # Сохраняем путь в best_model.txt
         with open("best_model.txt", "w") as f:
             f.write(model_uri)
         
-        # Выводим путь в stdout (это будет единственное, что попадет в файл при перенаправлении)
+        # Выводим путь для логирования
         print(model_uri)
         
         print("✅ Model saved successfully", file=sys.stderr)
+        print(f"Model URI: {model_uri}", file=sys.stderr)
     
     print("=== Training completed ===", file=sys.stderr)
