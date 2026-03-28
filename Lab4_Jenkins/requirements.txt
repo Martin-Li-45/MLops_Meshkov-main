@@ -3,3 +3,4 @@ scikit-learn
 mlflow
 joblib
 flask
+imbalanced-learn
