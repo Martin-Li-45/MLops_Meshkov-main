@@ -1,122 +1,189 @@
 import pandas as pd
-import numpy as np
-from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
-import mlflow
-import mlflow.sklearn
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import GridSearchCV
+import numpy as np
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix
 from mlflow.models import infer_signature
+import mlflow
 import joblib
-import os
-import sys
+import warnings
+warnings.filterwarnings('ignore')
 
-def eval_metrics(y_true, y_pred, y_pred_proba=None):
-    accuracy = accuracy_score(y_true, y_pred)
-    precision = precision_score(y_true, y_pred, zero_division=0)
-    recall = recall_score(y_true, y_pred, zero_division=0)
-    f1 = f1_score(y_true, y_pred, zero_division=0)
-    roc_auc = roc_auc_score(y_true, y_pred_proba) if y_pred_proba is not None else None
+def scale_frame(frame):
+    """
+    Масштабирование признаков для задачи классификации
+    """
+    df = frame.copy()
+    # Определяем целевой признак (stroke) и признаки
+    target = 'stroke'
+    X = df.drop(columns=[target])
+    y = df[target]
+    
+    # Масштабируем только признаки
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    
+    return X_scaled, y.values, scaler
+
+def eval_metrics(actual, pred, pred_proba=None):
+    """
+    Расчет метрик для задачи классификации
+    """
+    accuracy = accuracy_score(actual, pred)
+    precision = precision_score(actual, pred, zero_division=0)
+    recall = recall_score(actual, pred, zero_division=0)
+    f1 = f1_score(actual, pred, zero_division=0)
+    
+    # ROC-AUC только если есть вероятности
+    roc_auc = None
+    if pred_proba is not None:
+        roc_auc = roc_auc_score(actual, pred_proba)
+    
     return accuracy, precision, recall, f1, roc_auc
 
 if __name__ == "__main__":
     # Загружаем очищенные данные
+    print("Loading data...")
     df = pd.read_csv("./df_clear.csv")
-    
-    print(f"Loaded {len(df)} rows", file=sys.stderr)
-    print("Columns:", list(df.columns), file=sys.stderr)
-    
-    # Целевая переменная
-    target = 'stroke'
-    if target not in df.columns:
-        print(f"ERROR: '{target}' not found in columns!", file=sys.stderr)
-        print("Available columns:", list(df.columns), file=sys.stderr)
-        exit(1)
-    
-    X = df.drop(columns=[target])
-    y = df[target]
+    print(f"Dataset shape: {df.shape}")
+    print(f"Target distribution:\n{df['stroke'].value_counts()}")
     
     # Масштабируем признаки
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
+    X_scaled, y, scaler = scale_frame(df)
     
-    # Разделяем данные
+    # Разделяем данные на train и validation
     X_train, X_val, y_train, y_val = train_test_split(
-        X_scaled, y, test_size=0.2, random_state=42, stratify=y
+        X_scaled, y,
+        test_size=0.3,
+        random_state=42,
+        stratify=y  # стратификация для несбалансированных классов
     )
     
-    print(f"Train size: {len(X_train)}, Val size: {len(X_val)}", file=sys.stderr)
-    print(f"Positive class ratio: {y.mean():.4f}", file=sys.stderr)
+    print(f"Train size: {X_train.shape}, Validation size: {X_val.shape}")
+    print(f"Train positive class ratio: {y_train.mean():.4f}")
+    print(f"Validation positive class ratio: {y_val.mean():.4f}")
     
-    # Настраиваем MLflow
+    # Параметры для GridSearch
+    # Используем RandomForest как более подходящий для несбалансированных данных
+    params = {
+        'n_estimators': [50, 100, 150],
+        'max_depth': [5, 10, 15, None],
+        'min_samples_split': [2, 5, 10],
+        'min_samples_leaf': [1, 2, 4],
+        'class_weight': ['balanced', 'balanced_subsample', None]
+    }
+    
+    # Настройка MLflow эксперимента
     mlflow.set_experiment("stroke_prediction_model")
     
-    with mlflow.start_run() as run:
-        # Обучаем модель
-        model = RandomForestClassifier(
-            n_estimators=100, 
-            max_depth=10, 
-            random_state=42, 
-            class_weight='balanced'
+    with mlflow.start_run():
+        print("\nStarting GridSearchCV...")
+        
+        # Создаем модель RandomForestClassifier
+        rf = RandomForestClassifier(random_state=42, n_jobs=-1)
+        
+        # GridSearch с кросс-валидацией
+        clf = GridSearchCV(
+            rf, 
+            params, 
+            cv=3, 
+            n_jobs=4,
+            scoring='roc_auc',  # оптимизируем ROC-AUC из-за дисбаланса классов
+            verbose=1
         )
-        model.fit(X_train, y_train)
         
-        # Предсказания
-        y_pred = model.predict(X_val)
-        y_pred_proba = model.predict_proba(X_val)[:, 1]
+        clf.fit(X_train, y_train)
         
-        # Метрики
+        # Получаем лучшую модель
+        best_model = clf.best_estimator_
+        
+        # Предсказания на валидационной выборке
+        y_pred = best_model.predict(X_val)
+        y_pred_proba = best_model.predict_proba(X_val)[:, 1]  # вероятности для ROC-AUC
+        
+        # Расчет метрик
         accuracy, precision, recall, f1, roc_auc = eval_metrics(y_val, y_pred, y_pred_proba)
         
-        # Логируем параметры
-        mlflow.log_param("n_estimators", 100)
-        mlflow.log_param("max_depth", 10)
-        mlflow.log_param("class_weight", "balanced")
+        # Логируем параметры лучшей модели
+        mlflow.log_param("best_params", str(clf.best_params_))
+        mlflow.log_param("n_estimators", best_model.n_estimators)
+        mlflow.log_param("max_depth", best_model.max_depth)
+        mlflow.log_param("min_samples_split", best_model.min_samples_split)
+        mlflow.log_param("min_samples_leaf", best_model.min_samples_leaf)
+        mlflow.log_param("class_weight", best_model.class_weight)
+        mlflow.log_param("random_state", 42)
         
         # Логируем метрики
         mlflow.log_metric("accuracy", accuracy)
         mlflow.log_metric("precision", precision)
         mlflow.log_metric("recall", recall)
-        mlflow.log_metric("f1", f1)
+        mlflow.log_metric("f1_score", f1)
         mlflow.log_metric("roc_auc", roc_auc)
         
-        print(f"Metrics - Accuracy: {accuracy:.4f}, ROC-AUC: {roc_auc:.4f}", file=sys.stderr)
+        # Логируем матрицу ошибок как артефакт
+        cm = confusion_matrix(y_val, y_pred)
+        print(f"\nConfusion Matrix:\n{cm}")
         
-        # ========== ИСПРАВЛЕННАЯ ЧАСТЬ ==========
-        # Создаем сигнатуру
-        signature = infer_signature(X_train, model.predict(X_train))
+        # Создаем сигнатуру для модели
+        signature = infer_signature(X_train, best_model.predict(X_train))
         
-        # Логируем модель ПРАВИЛЬНО - с artifact_path="model"
-        # Это создаст структуру artifacts/model/ с необходимыми файлами
+        # Логируем модель в MLflow
         mlflow.sklearn.log_model(
-            sk_model=model,
-            artifact_path="model",  # ВАЖНО: именно "model", а не что-то другое
+            best_model, 
+            "model", 
             signature=signature,
             registered_model_name="stroke_predictor"
         )
         
-        # Сохраняем scaler как артефакт (чтобы он был в MLflow)
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmpdir:
-            scaler_path = os.path.join(tmpdir, "scaler.pkl")
-            joblib.dump(scaler, scaler_path)
-            mlflow.log_artifact(scaler_path, artifact_path="model")
-        
-        # Сохраняем модель локально (как fallback)
-        joblib.dump(model, "stroke_model.pkl")
+        # Сохраняем модель локально
+        joblib.dump(best_model, "stroke_model.pkl")
         joblib.dump(scaler, "scaler.pkl")
         
-        # Получаем правильный URI для serving
-        model_uri = f"runs:/{run.info.run_id}/model"
+        print("\n" + "="*50)
+        print("Model Training Completed!")
+        print(f"Best parameters: {clf.best_params_}")
+        print(f"Best CV score: {clf.best_score_:.4f}")
+        print(f"Validation metrics:")
+        print(f"  Accuracy:  {accuracy:.4f}")
+        print(f"  Precision: {precision:.4f}")
+        print(f"  Recall:    {recall:.4f}")
+        print(f"  F1-Score:  {f1:.4f}")
+        print(f"  ROC-AUC:   {roc_auc:.4f}")
+        print("="*50)
         
-        # Сохраняем путь в best_model.txt
-        with open("best_model.txt", "w") as f:
-            f.write(model_uri)
-        
-        # Выводим путь для логирования
-        print(model_uri)
-        
-        print("✅ Model saved successfully", file=sys.stderr)
-        print(f"Model URI: {model_uri}", file=sys.stderr)
-    
-    print("=== Training completed ===", file=sys.stderr)
+        # Сохраняем информацию о лучшей модели для деплоя
+        # Находим лучший run по ROC-AUC
+        df_runs = mlflow.search_runs()
+        if len(df_runs) > 0:
+            # Сортируем по ROC-AUC (если есть, иначе по F1)
+            if 'metrics.roc_auc' in df_runs.columns:
+                best_run = df_runs.sort_values("metrics.roc_auc", ascending=False).iloc[0]
+            else:
+                best_run = df_runs.sort_values("metrics.f1_score", ascending=False).iloc[0]
+            
+            path2model = best_run['artifact_uri'].replace("file://", "") + '/model'
+            print(f"\nPath to best model: {path2model}")
+            
+            # Сохраняем путь в файл для деплоя
+            with open("best_model.txt", "w") as f:
+                f.write(path2model)
+        else:
+            # Если нет runs, используем локальную модель
+            with open("best_model.txt", "w") as f:
+                f.write("./stroke_model.pkl")
+            print("\nNo MLflow runs found, using local model path")
+
+# Дополнительно: создаем файл с информацией о признаках для сервиса
+feature_info = pd.DataFrame({
+    'feature': ['gender', 'age', 'hypertension', 'heart_disease', 'ever_married',
+                'work_type', 'Residence_type', 'avg_glucose_level', 'bmi', 'smoking_status'],
+    'description': [
+        'Пол пациента', 'Возраст', 'Гипертония (0/1)', 'Болезни сердца (0/1)', 'Был в браке',
+        'Тип работы', 'Тип проживания', 'Средний уровень глюкозы', 'Индекс массы тела', 'Статус курения'
+    ]
+})
+feature_info.to_csv('feature_info.csv', index=False)
+print("\nFeature info saved to feature_info.csv")
